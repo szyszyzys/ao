@@ -13,6 +13,7 @@
 #include <torchao/experimental/kernels/cpu/aarch64/bitpacking/bitpack.h>
 #include <torchao/experimental/kernels/cpu/aarch64/linear/channelwise_8bit_activation_groupwise_lowbit_weight/channelwise_8bit_activation_groupwise_lowbit_weight.h>
 #include <torchao/experimental/kernels/cpu/aarch64/tests/test_utils.h>
+\
 
 float kTol = 0.0001;
 
@@ -414,6 +415,14 @@ TEST(test_channelwise_8bit_activation_groupwise_lowbit_weight, tile_1x8x16) {
   }
 }
 
+void determine_zero_point_and_scale(const std::vector<int8_t>& weight_qvals, int weight_nbit, int& zero_point, float& scale) {
+    int min_val = *std::min_element(weight_qvals.begin(), weight_qvals.end());
+    int max_val = *std::max_element(weight_qvals.begin(), weight_qvals.end());
+    zero_point = (min_val + max_val) / 2;
+    int num_quant_levels = 1 << weight_nbit;
+    scale = (max_val - min_val) / (num_quant_levels - 1);
+}
+
 template <int weight_nbit, bool has_weight_zeros>
 void test_channelwise_8bit_activation_groupwise_lowbit_weight_lut(
     int m,
@@ -453,21 +462,21 @@ void test_channelwise_8bit_activation_groupwise_lowbit_weight_lut(
       mr,
       kr,
       sr);
+  int min_val = *std::min_element(test_case.weight_qvals.begin(), test_case.weight_qvals.end());
+  int max_val = *std::max_element(test_case.weight_qvals.begin(), test_case.weight_qvals.end());
+  int zero_point = (min_val + max_val) / 2;
+  int num_quant_levels = 1 << weight_nbit;
+  float scale = (max_val - min_val) / (num_quant_levels - 1);
 
-  // Define equivalent LUT for affine quantization
-  constexpr int lut_size = (1 << weight_nbit);
-  std::vector<int8_t> weight_qval_idxs(test_case.weight_qvals.size());
-  std::vector<int8_t> lut(lut_size, 0);
-  constexpr int offset = (1 << (weight_nbit - 1));
-  for (int i = 0; i < test_case.weight_qvals.size(); i++) {
-    weight_qval_idxs[i] = test_case.weight_qvals[i] + offset;
-  }
-  for (int i = 0; i < lut_size; i++) {
-    lut[i] = i - offset;
-  }
+  torchao::general_lut_test_case lut_test_case(weight_nbit, test_case.weight_qvals, scale, zero_point);
+  // Access the LUT and weight_qval_idxs
+  const std::vector<int8_t>& lut = lut_test_case.getLUT();
+  const std::vector<int8_t>& weight_qval_idxs = lut_test_case.getWeightQvalIdxs();
 
+  // assigne space
   std::vector<char> packed_weights(packed_weights_with_lut_size(
       n, k, group_size, weight_nbit, has_weight_zeros, has_bias, nr, kr, sr));
+  // fill in the packed weights
   pack_weights_with_lut<weight_nbit, nr, kr, sr>(
       (void*)packed_weights.data(),
       n,

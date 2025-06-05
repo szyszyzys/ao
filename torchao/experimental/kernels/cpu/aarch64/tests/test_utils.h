@@ -350,6 +350,54 @@ struct channelwise_8bit_activation_groupwise_lowbit_weight_test_case {
   }
 };
 
+
+struct general_lut_test_case {
+  int weight_nbit;
+  std::vector<int8_t> lut; // Use int8_t for quantized values
+  std::vector<int8_t> weight_qval_idxs;
+  general_lut_test_case(int weight_nbit_, const std::vector<int8_t>& weight_qvals, float scale, int zero_point)
+      : weight_nbit(weight_nbit_), weight_qval_idxs(weight_qvals.size()) {
+      assert(weight_nbit > 0 && weight_nbit <= 8);
+      generateLUT(scale, zero_point);
+      generateWeightQvalIdxs(weight_qvals);
+  }
+  void generateLUT(float scale, int zero_point) {
+      int lut_size = (1 << weight_nbit);
+      lut.resize(lut_size);
+      int offset = (1 << (weight_nbit - 1));
+      for (int i = 0; i < lut_size; ++i) {
+          int q = i - offset; // Adjust for signed range
+          lut[i] = static_cast<int8_t>(scale * (q - zero_point)); // Quantization formula
+      }
+  }
+  void generateWeightQvalIdxs(const std::vector<int8_t>& weight_qvals) {
+      int offset = (1 << (weight_nbit - 1));
+      for (size_t i = 0; i < weight_qvals.size(); ++i) {
+          weight_qval_idxs[i] = weight_qvals[i] + offset;
+      }
+  }
+
+  int getSize() const {
+      return lut.size();
+  }
+
+  const std::vector<int8_t>& getLUT() const {
+      return lut;
+  }
+
+  const std::vector<int8_t>& getWeightQvalIdxs() const {
+      return weight_qval_idxs;
+  }
+
+  void updateMapping(std::function<float(int)> mappingFunction) {
+      for (int i = 0; i < lut.size(); ++i) {
+          lut[i] = mappingFunction(i);
+      }
+  }
+};
+
+
+
 struct channelwise_8bit_a_channelwise_8bit_b_qmatmul_test_case {
   int m;
   int k;
