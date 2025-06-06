@@ -1,0 +1,159 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+// All rights reserved.
+//
+// This source code is licensed under the license found in the
+// LICENSE file in the root directory of this source tree.
+
+#pragma once
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+
+#include <arm_neon.h>
+#include <cassert>
+#include <stddef.h>
+
+// These would be the new, corresponding implementation files for this kernel
+#include <torchao/experimental/kernels/cpu/aarch64/linear/groupwise_lowbit_weight_with_lut/pack_activations.h>
+#include <torchao/experimental/kernels/cpu/aarch64/linear/groupwise_lowbit_weight_with_lut/pack_weights.h>
+#include <torchao/experimental/kernels/cpu/aarch64/linear/groupwise_lowbit_weight_with_lut/kernel_f32_fma-impl.h>
+
+namespace torchao::kernels::cpu::aarch64::linear::
+    groupwise_lowbit_weight_with_lut {
+
+// Define the micro-kernel tile parameters. The kernel implementation will be
+// optimized for these sizes.
+// MR: Rows of A and C processed per micro-kernel
+// NR: Columns of B and C processed per micro-kernel
+constexpr int MR = 4;
+constexpr int NR = 16;
+
+//
+// Activation Packing Functions
+//
+// Activations are not quantized but are reordered into a cache-friendly
+// layout for the kernel.
+//
+
+inline size_t packed_activations_size(int m, int k) {
+  return activation_packing::packed_activations_size(m, k, MR);
+}
+
+inline size_t packed_activations_offset(int m_idx, int k) {
+  assert(m_idx % MR == 0);
+  auto packed_activations_size_mr_rows =
+      packed_activations_size(MR, k);
+  return (m_idx / MR) * packed_activations_size_mr_rows;
+}
+
+template <int mr_>
+void pack_activations(
+    // Output
+    void* packed_activations,
+    // Inputs
+    int m,
+    int k,
+    const float* activations) {
+  activation_packing::pack_activations<mr_>(
+      packed_activations, m, k, activations);
+}
+
+//
+// Weight + LUT Packing Functions
+//
+// Weights are packed along with their corresponding group-wise look-up tables.
+// The packed layout for NR columns is:
+// 1. Bias (optional): [NR] floats
+// 2. LUTs: [k / group_size, 2^weight_nbit] floats
+// 3. Weight indices: Tightly packed low-bit indices for [NR, K] weights
+//
+
+inline size_t packed_weights_with_lut_size(
+    int n,
+    int k,
+    int group_size,
+    int weight_nbit,
+    bool has_bias) {
+  return weight_packing::packed_weights_with_lut_size(
+      n, k, group_size, weight_nbit, has_bias, NR);
+}
+
+inline size_t packed_weights_with_lut_offset(
+    int n_idx,
+    int k,
+    int group_size,
+    int weight_nbit,
+    bool has_bias) {
+  assert(n_idx % NR == 0);
+  auto packed_weights_size_nr_cols = packed_weights_with_lut_size(
+      NR, k, group_size, weight_nbit, has_bias);
+  return (n_idx / NR) * packed_weights_size_nr_cols;
+}
+
+template <int weight_nbit, int nr_>
+void pack_weights_with_lut(
+    // Output
+    void* packed_weights,
+    // Inputs
+    int n,
+    int k,
+    int group_size,
+    const int8_t* weight_qval_idxs,
+    const float* luts,
+    const float* bias) {
+  weight_packing::pack_weights_with_lut<weight_nbit, nr_>(
+      packed_weights,
+      n,
+      k,
+      group_size,
+      weight_qval_idxs,
+      luts,
+      bias);
+}
+
+//
+// Compute Kernel
+//
+// Computes C = A * B using a LUT for B.
+// A is float32
+// B is represented by low-bit indices + group-wise float32 LUTs
+//
+template <int weight_nbit, bool has_bias, bool has_clamp>
+void kernel_f32_fma(
+    // Outputs
+    float* output,
+    // Inputs
+    int output_m_stride,
+    int m,
+    int n,
+    int k,
+    int group_size,
+    const void* packed_weights,
+    const void* packed_activations,
+    // Ignored if has_clamp = false
+    float clamp_min,
+    float clamp_max,
+    // Runtime flags passed to the templated kernel.
+    // The template already specializes, so these are for function signature
+    // compatibility and are not used inside the dispatcher.
+    bool has_bias_,
+    bool has_clamp_) {
+  (void)has_bias_;  // Unused, handled by template
+  (void)has_clamp_; // Unused, handled by template
+
+  kernel::kernel_f32_fma<weight_nbit, has_bias, has_clamp>(
+      output,
+      output_m_stride,
+      m,
+      n,
+      k,
+      group_size,
+      packed_weights,
+      packed_activations,
+      clamp_min,
+      clamp_max);
+}
+
+} // namespace
+  // torchao::kernels::cpu::aarch64::linear::groupwise_lowbit_weight_with_lut
+
+#endif // defined(__aarch64__) || defined(__ARM_NEON)
